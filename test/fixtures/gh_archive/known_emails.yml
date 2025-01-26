@@ -1,0 +1,13 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+
+one:
+  gh_archive_user: one
+  email: MyString
+  name: MyString
+  is_private_email: false
+
+two:
+  gh_archive_user: two
+  email: MyString
+  name: MyString
+  is_private_email: false

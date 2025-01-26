@@ -10,9 +10,21 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_01_26_172602) do
+ActiveRecord::Schema[8.0].define(version: 2025_01_26_201702) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "gh_archive_known_emails", force: :cascade do |t|
+    t.bigint "gh_archive_user_id", null: false
+    t.string "email", null: false
+    t.string "name"
+    t.boolean "is_private_email", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["email"], name: "index_gh_archive_known_emails_on_email"
+    t.index ["gh_archive_user_id", "email"], name: "index_gh_archive_known_emails_on_user_and_email", unique: true
+    t.index ["gh_archive_user_id"], name: "index_gh_archive_known_emails_on_gh_archive_user_id"
+  end
 
   create_table "gh_archive_users", force: :cascade do |t|
     t.string "username", null: false
@@ -20,4 +32,6 @@ ActiveRecord::Schema[8.0].define(version: 2025_01_26_172602) do
     t.datetime "updated_at", null: false
     t.index ["username"], name: "index_gh_archive_users_on_username"
   end
+
+  add_foreign_key "gh_archive_known_emails", "gh_archive_users"
 end
