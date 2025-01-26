@@ -1,0 +1,3 @@
+We are using Docker Compose to run the application. If you need to run commands,
+prefix them with `docker compose run --rm dev`. For example: `docker compose run
+--rm dev rails g`. Do this for migrations and other Rails commands.
