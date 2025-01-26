@@ -4,7 +4,14 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   DISABLE_ACTIVE_RECORD_LOGGING = true
 
   def perform(*args)
-    files = Dir.glob("external_storage/gharchive.org/*")
+    # files named like YYY-MM-DD-h.json.gz, sorted by date and hour
+    files = Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
+      # Extract date and hour from filename
+      date_str = File.basename(file, '.json.gz')
+      # Convert hour part to padded number for proper sorting
+      date_str.sub(/-(\d{1,2})$/) { |m| "-%02d" % $1.to_i }
+    end
+
     Rails.logger.info "Found #{files.count} files"
 
     if DISABLE_ACTIVE_RECORD_LOGGING
@@ -15,16 +22,23 @@ class ProcessGhArchiveExportsJob < ApplicationJob
 
     files.each do |file|
       Rails.logger.info "Processing file: #{file}"
-
+      batch = {}
+      
       read_json_events_archive(file) do |e|
-        pp e
-        GhArchive::User.upsert(
-          {
-            username: e[:actor][:login],
-            id: e[:actor][:id]
-          }
-        )
+        user_id = e[:actor][:id]
+        batch[user_id] = {
+          username: e[:actor][:login],
+          id: user_id
+        }
+        
+        if batch.size >= 1000
+          GhArchive::User.upsert_all(batch.values)
+          batch = {}
+        end
       end
+
+      # Insert any remaining records
+      GhArchive::User.upsert_all(batch.values) if batch.any?
     end
 
     # Turn logging back on if it was disabled
