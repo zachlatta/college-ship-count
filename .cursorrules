@@ -1,3 +1,7 @@
 We are using Docker Compose to run the application. If you need to run commands,
-prefix them with `docker compose run --rm dev`. For example: `docker compose run
+prefix them with `docker compose run --rm web`. For example: `docker compose run
 --rm dev rails g`. Do this for migrations and other Rails commands.
+
+This is a Rails app. When deciding what to do, consider the Rails way of doing.
+Also - read the files in this app so you understand what's going on before
+suggesting changes.
