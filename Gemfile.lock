@@ -165,6 +165,7 @@ GEM
     net-sftp (4.0.0)
       net-ssh (>= 5.0.0, < 8.0.0)
     net-smtp (0.5.0)
+      net-protocol
     net-ssh (7.3.0)
     nio4r (2.7.4)
     nokogiri (1.18.2-aarch64-linux-gnu)
@@ -375,4 +376,4 @@ DEPENDENCIES
   web-console
 
 BUNDLED WITH
-   2.6.3
+   2.6.2
