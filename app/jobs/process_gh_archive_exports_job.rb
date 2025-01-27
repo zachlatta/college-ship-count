@@ -18,6 +18,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
 
     files.each do |file|
       Rails.logger.info "Processing file: #{file}"
+
       process_users_in_file(file)
       process_emails_in_file(file)
     end
@@ -32,32 +33,24 @@ class ProcessGhArchiveExportsJob < ApplicationJob
 
   def process_users_in_file(file)
     Rails.logger.info "Processing users in file: #{file}"
-    user_batch = {}
-
-    read_json_events_archive(file) do |e|
-      if e[:actor]
-        user_id = e[:actor][:id]
-        user_batch[user_id] = {
-          username: e[:actor][:login],
-          id: user_id
-        }
-        
-        if user_batch.size >= BATCH_SIZE
-          GhArchive::User.upsert_all(user_batch.values)
-          user_batch = {}
-        end
-      end
+    batch_process_upsert(file, GhArchive::User) do |e, batch|
+      next unless e[:actor]
+      user_id = e[:actor][:id]
+      batch[user_id] = {
+        username: e[:actor][:login],
+        id: user_id
+      }
     end
-
-    # Insert any remaining records
-    GhArchive::User.upsert_all(user_batch.values) if user_batch.any?
   end
 
   def process_emails_in_file(file)
     Rails.logger.info "Processing emails in file: #{file}"
-    known_email_batch = {}
-
-    read_json_events_archive(file) do |e|
+    batch_process_upsert(
+      file, 
+      GhArchive::KnownEmail,
+      unique_by: [:gh_archive_user_id, :email],
+      update_only: [:name, :is_private_email]
+    ) do |e, batch|
       next unless e[:type] == "PushEvent"
       user_id = e[:actor][:id]
       
@@ -71,35 +64,34 @@ class ProcessGhArchiveExportsJob < ApplicationJob
 
         # Use composite key for tracking latest entry
         key = "#{user_id}-#{email}"
-        known_email_batch[key] = {
+        batch[key] = {
           email: email,
           name: name,
           is_private_email: GhArchive::KnownEmail.private_email?(email),
           gh_archive_user_id: user_id
         }
-        
-        if known_email_batch.size >= BATCH_SIZE
-          GhArchive::KnownEmail.upsert_all(
-            known_email_batch.values,
-            unique_by: [:gh_archive_user_id, :email],
-            update_only: [:name, :is_private_email]
-          )
-          known_email_batch = {}
-        end
+      end
+    end
+  end
+
+  def batch_process_upsert(file, model, upsert_options = {})
+    batch = {}
+
+    read_json_events_archive(file) do |event|
+      yield(event, batch)
+      
+      if batch.size >= BATCH_SIZE
+        model.upsert_all(batch.values, **upsert_options)
+        batch = {}
       end
     end
 
-    # Insert any remaining records
-    GhArchive::KnownEmail.upsert_all(
-      known_email_batch.values,
-      unique_by: [:gh_archive_user_id, :email],
-      update_only: [:name, :is_private_email]
-    ) if known_email_batch.any?
+    model.upsert_all(batch.values, **upsert_options) if batch.any?
   end
 
   def sorted_gh_archive_filepaths
     # Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
-    Dir.glob("/root/college-ship-count/external_storage/gharchive.org/*").sort_by do |file|
+    Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
       # Extract date and hour from filename
       date_str = File.basename(file, '.json.gz')
       # Convert hour part to padded number for proper sorting
