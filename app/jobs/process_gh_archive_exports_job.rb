@@ -22,9 +22,10 @@ class ProcessGhArchiveExportsJob < ApplicationJob
       # must be processed first, as it is used by the other models
       process_users_in_file(file)
 
-      # order doesn't matter
-      process_repos_in_file(file)
-      process_emails_in_file(file)
+      # Process repos and emails in parallel
+      Parallel.each(['repos', 'emails'], in_processes: 2) do |type|
+        send("process_#{type}_in_file", file)
+      end
     end
 
     # Turn logging back on if it was disabled
