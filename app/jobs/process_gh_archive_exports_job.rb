@@ -2,7 +2,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   queue_as :default
 
   DISABLE_ACTIVE_RECORD_LOGGING = true
-  BATCH_SIZE = 5000
+  BATCH_SIZE = 50_000
 
   def perform(*args)
     # files named like YYY-MM-DD-h.json.gz, sorted by date and hour
@@ -19,7 +19,11 @@ class ProcessGhArchiveExportsJob < ApplicationJob
     files.each do |file|
       Rails.logger.info "Processing file: #{file}"
 
+      # must be processed first, as it is used by the other models
       process_users_in_file(file)
+
+      # order doesn't matter
+      process_repos_in_file(file)
       process_emails_in_file(file)
     end
 
@@ -39,6 +43,28 @@ class ProcessGhArchiveExportsJob < ApplicationJob
       batch[user_id] = {
         username: e[:actor][:login],
         id: user_id
+      }
+    end
+  end
+
+  def process_repos_in_file(file)
+    Rails.logger.info "Processing repos in file: #{file}"
+    batch_process_upsert(file, GhArchive::Repo) do |e, batch|
+      next unless e[:repo]
+      repo_id = e[:repo][:id]
+      
+      # Split repo name into owner and repo parts
+      owner, repo_name = e[:repo][:name].split('/')
+      next unless owner && repo_name # Skip if name doesn't have expected format
+      
+      # Look up GH user by username
+      user = GhArchive::User.find_by(username: owner)
+      next unless user # Skip if we can't find the user
+      
+      batch[repo_id] = {
+        id: repo_id,
+        name: repo_name,
+        gh_archive_user_id: user.id
       }
     end
   end
