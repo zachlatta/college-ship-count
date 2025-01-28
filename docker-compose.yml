@@ -8,6 +8,7 @@ services:
     volumes:
       - .:/usr/src/app
       - bundle_cache:/usr/local/bundle
+      - /mnt/HC_Volume_102028667/gh_archive_download/gharchive_2024/:/mnt/gh_archive/
     environment:
       - POSTGRES_HOST=db
       - POSTGRES_USER=postgres

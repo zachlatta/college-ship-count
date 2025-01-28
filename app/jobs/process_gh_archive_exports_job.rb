@@ -2,7 +2,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   queue_as :default
 
   DISABLE_ACTIVE_RECORD_LOGGING = true
-  BATCH_SIZE = 50_000
+  BATCH_SIZE = 100_000
 
   def perform(*args)
     # files named like YYY-MM-DD-h.json.gz, sorted by date and hour
@@ -23,9 +23,8 @@ class ProcessGhArchiveExportsJob < ApplicationJob
       process_users_in_file(file)
 
       # Process repos and emails in parallel
-      Parallel.each(['repos', 'emails'], in_processes: 2) do |type|
-        send("process_#{type}_in_file", file)
-      end
+      process_repos_in_file(file)
+      process_emails_in_file(file)
     end
 
     # Turn logging back on if it was disabled
@@ -38,35 +37,49 @@ class ProcessGhArchiveExportsJob < ApplicationJob
 
   def process_users_in_file(file)
     Rails.logger.info "Processing users in file: #{file}"
-    batch_process_upsert(file, GhArchive::User) do |e, batch|
-      next unless e[:actor]
-      user_id = e[:actor][:id]
-      batch[user_id] = {
-        username: e[:actor][:login],
-        id: user_id
-      }
+    batch_process_upsert(file, GhArchive::User) do |events, batch|
+      events.each do |e|
+        next unless e[:actor]
+        user_id = e[:actor][:id]
+        batch[user_id] = {
+          username: e[:actor][:login],
+          id: user_id
+        }
+      end
     end
   end
 
   def process_repos_in_file(file)
     Rails.logger.info "Processing repos in file: #{file}"
-    batch_process_upsert(file, GhArchive::Repo) do |e, batch|
-      next unless e[:repo]
-      repo_id = e[:repo][:id]
+    batch_process_upsert(file, GhArchive::Repo) do |events, batch|
+      # Extract unique owner usernames from events
+      owner_usernames = events.map do |e| 
+        e[:repo][:name].split('/').first if e[:repo]
+      end.compact.uniq
       
-      # Split repo name into owner and repo parts
-      owner, repo_name = e[:repo][:name].split('/')
-      next unless owner && repo_name # Skip if name doesn't have expected format
+      # Batch lookup users by username
+      users_by_username = GhArchive::User.select(:username, :id)
+                                       .where(username: owner_usernames)
+                                       .index_by(&:username)
       
-      # Look up GH user by username
-      user = GhArchive::User.find_by(username: owner)
-      next unless user # Skip if we can't find the user
-      
-      batch[repo_id] = {
-        id: repo_id,
-        name: repo_name,
-        gh_archive_user_id: user.id
-      }
+      events.each do |e|
+        next unless e[:repo]
+        repo_id = e[:repo][:id]
+        
+        # Split repo name into owner and repo parts
+        owner, repo_name = e[:repo][:name].split('/')
+        next unless owner && repo_name # Skip if name doesn't have expected format
+        
+        # Get user from preloaded hash
+        user = users_by_username[owner]
+        next unless user # Skip if we can't find the user
+        
+        batch[repo_id] = {
+          id: repo_id,
+          name: repo_name,
+          gh_archive_user_id: user.id
+        }
+      end
     end
   end
 
@@ -77,48 +90,56 @@ class ProcessGhArchiveExportsJob < ApplicationJob
       GhArchive::KnownEmail,
       unique_by: [:gh_archive_user_id, :email],
       update_only: [:name, :is_private_email]
-    ) do |e, batch|
-      next unless e[:type] == "PushEvent"
-      user_id = e[:actor][:id]
-      
-      commits = e[:payload][:commits]
-      commits&.each do |commit|
-        author = commit[:author]
-        next unless author && author[:email].present?
+    ) do |events, batch|
+      events.each do |e|
+        next unless e[:type] == "PushEvent"
+        user_id = e[:actor][:id]
+        
+        commits = e[:payload][:commits]
+        commits&.each do |commit|
+          author = commit[:author]
+          next unless author && author[:email].present?
 
-        email = author[:email]
-        name = author[:name]
+          email = author[:email]
+          name = author[:name]
 
-        # Use composite key for tracking latest entry
-        key = "#{user_id}-#{email}"
-        batch[key] = {
-          email: email,
-          name: name,
-          is_private_email: GhArchive::KnownEmail.private_email?(email),
-          gh_archive_user_id: user_id
-        }
+          # Use composite key for tracking latest entry
+          key = "#{user_id}-#{email}"
+          batch[key] = {
+            email: email,
+            name: name,
+            is_private_email: GhArchive::KnownEmail.private_email?(email),
+            gh_archive_user_id: user_id
+          }
+        end
       end
     end
   end
 
   def batch_process_upsert(file, model, upsert_options = {})
     batch = {}
+    current_events = []
 
     read_json_events_archive(file) do |event|
-      yield(event, batch)
+      current_events << event
       
-      if batch.size >= BATCH_SIZE
+      if current_events.size >= BATCH_SIZE
+        yield(current_events, batch)
         model.upsert_all(batch.values, **upsert_options)
         batch = {}
+        current_events = []
       end
     end
 
+    # Process any remaining events
+    yield(current_events, batch) if current_events.any?
     model.upsert_all(batch.values, **upsert_options) if batch.any?
   end
 
   def sorted_gh_archive_filepaths
     # Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
-    Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
+    # Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
+    Dir.glob("/mnt/gh_archive/*").sort_by do |file|
       # Extract date and hour from filename
       date_str = File.basename(file, '.json.gz')
       # Convert hour part to padded number for proper sorting
