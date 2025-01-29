@@ -2,7 +2,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   queue_as :default
 
   DISABLE_ACTIVE_RECORD_LOGGING = true
-  BATCH_SIZE = 100_000
+  BATCH_SIZE = 10_000
 
   def perform(*args)
     # files named like YYY-MM-DD-h.json.gz, sorted by date and hour
@@ -137,9 +137,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   end
 
   def sorted_gh_archive_filepaths
-    # Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
-    # Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
-    Dir.glob("/mnt/gh_archive/*").sort_by do |file|
+    Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
       # Extract date and hour from filename
       date_str = File.basename(file, '.json.gz')
       # Convert hour part to padded number for proper sorting
