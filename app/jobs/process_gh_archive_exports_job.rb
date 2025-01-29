@@ -1,14 +1,18 @@
+require 'open-uri'
+
 class ProcessGhArchiveExportsJob < ApplicationJob
   queue_as :default
 
   DISABLE_ACTIVE_RECORD_LOGGING = true
-  BATCH_SIZE = 10_000
+  BATCH_SIZE = 10_000.freeze
+  GH_ARCHIVE_BASE_URL = "https://data.gharchive.org".freeze
+  START_DATE = Date.new(2024, 1, 1).freeze
+  END_DATE = Date.new(2024, 12, 31).freeze
 
-  def perform(*args)
-    # files named like YYY-MM-DD-h.json.gz, sorted by date and hour
-    files = sorted_gh_archive_filepaths
-
-    Rails.logger.info "Found #{files.count} files"
+  def perform(start_date = START_DATE, end_date = END_DATE)
+    validate_dates(start_date, end_date)
+    
+    Rails.logger.info "Processing GH Archive data from #{start_date} to #{end_date}"
 
     if DISABLE_ACTIVE_RECORD_LOGGING
       Rails.logger.info "DISABLE_ACTIVE_RECORD_LOGGING is true, disabling ActiveRecord logging"
@@ -16,24 +20,68 @@ class ProcessGhArchiveExportsJob < ApplicationJob
       ActiveRecord::Base.logger = nil
     end
 
-    files.each do |file|
-      Rails.logger.info "Processing file: #{file}"
-
-      # must be processed first, as it is used by the other models
-      process_users_in_file(file)
-
-      # Process repos and emails in parallel
-      process_repos_in_file(file)
-      process_emails_in_file(file)
+    # Create a unique temp directory for this job run
+    Dir.mktmpdir("gharchive-", Rails.root.join('tmp')) do |temp_dir|
+      generate_download_urls(start_date, end_date).each do |url|
+        filename = File.basename(url)
+        temp_file = File.join(temp_dir, filename)
+        
+        begin
+          download_file(url, temp_file)
+          process_downloaded_file(temp_file)
+        ensure
+          FileUtils.rm_f(temp_file) if File.exist?(temp_file)
+        end
+      end
     end
 
-    # Turn logging back on if it was disabled
-    ActiveRecord::Base.logger = original_logger if DISABLE_ACTIVE_RECORD_LOGGING
-
-    files
+  ensure
+    ActiveRecord::Base.logger = original_logger if defined?(original_logger) && DISABLE_ACTIVE_RECORD_LOGGING
   end
 
   private
+
+  def validate_dates(start_date, end_date)
+    raise ArgumentError, "start_date must be before end_date" if start_date > end_date
+    raise ArgumentError, "dates cannot be in the future" if end_date > Date.current
+  end
+
+  def generate_download_urls(start_date, end_date)
+    urls = []
+    (start_date..end_date).each do |date|
+      24.times do |hour|
+        urls << "#{GH_ARCHIVE_BASE_URL}/#{date.strftime('%Y-%m-%d')}-#{hour}.json.gz"
+      end
+    end
+    urls
+  end
+
+  def download_file(url, destination)
+    Rails.logger.info "Downloading #{url}"
+    
+    URI.open(url) do |remote_file|
+      File.open(destination, 'wb') do |local_file|
+        local_file.write(remote_file.read)
+      end
+    end
+  rescue OpenURI::HTTPError => e
+    if e.io.status[0] == "404"
+      Rails.logger.warn "File not found: #{url}"
+    else
+      raise
+    end
+  end
+
+  def process_downloaded_file(file_path)
+    return unless File.exist?(file_path)
+    
+    Rails.logger.info "Processing file: #{file_path}"
+    
+    # must be processed first, as it is used by the other models
+    process_users_in_file(file_path)
+    process_repos_in_file(file_path)
+    process_emails_in_file(file_path)
+  end
 
   def process_users_in_file(file)
     Rails.logger.info "Processing users in file: #{file}"
@@ -136,16 +184,9 @@ class ProcessGhArchiveExportsJob < ApplicationJob
     model.upsert_all(batch.values, **upsert_options) if batch.any?
   end
 
-  def sorted_gh_archive_filepaths
-    Dir.glob("external_storage/gharchive.org/*").sort_by do |file|
-      # Extract date and hour from filename
-      date_str = File.basename(file, '.json.gz')
-      # Convert hour part to padded number for proper sorting
-      date_str.sub(/-(\d{1,2})$/) { |m| "-%02d" % $1.to_i }
-    end
-  end
-
   def read_json_events_archive(file)
+    return unless File.exist?(file)
+    
     Zlib::GzipReader.open(file) do |gz|
       while (line = gz.gets)
         yield JSON.parse(line, symbolize_names: true)
