@@ -6,6 +6,7 @@ class ProcessGhArchiveExportsJob < ApplicationJob
   DISABLE_ACTIVE_RECORD_LOGGING = true
   BATCH_SIZE = 10_000.freeze
   GH_ARCHIVE_BASE_URL = "https://data.gharchive.org".freeze
+
   START_DATE = Date.new(2024, 1, 1).freeze
   END_DATE = Date.new(2024, 12, 31).freeze
 
